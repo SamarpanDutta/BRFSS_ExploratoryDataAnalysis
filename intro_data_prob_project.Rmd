@@ -1,0 +1,522 @@
+---
+title: "Exploring the BRFSS data"
+output: 
+  html_document: 
+    fig_height: 4
+    highlight: pygments
+    theme: spacelab
+---
+
+## Setup
+
+### Load packages
+
+```{r load-packages, message = FALSE}
+library(ggplot2)
+library(dplyr)
+library(pracma)
+library(tidyr)
+```
+
+### Load data
+
+We are going to use `BRFSS2013` data. More information including the metadata can be found at <http://www.cdc.gov/brfss/>
+
+For now, let us load the data.  
+
+```{r load-data}
+load("brfss2013.RData")
+```
+
+
+
+* * *
+
+## Part 1: Data  
+
+In order to decide on generalizability, we need to look at the way survay was conducted. As per the metadata description, BRFSS conducted both landline telephone- and cellular telephone-based surveys. while condcuting the landline-based surveys BRFSS collected data from a randomly selcted adult, and for the telephone-based surveys they interviewed the adult who participated. As this was the survey consisting of data gathered from 50 states, we need to know whether the samples were evenly distributed across the various regions of the state. That means for the outcome to be generalizable to the population, any region selection based bias should not there. Also when it comes to selection of the households to be included in the survey, the metadata has not mentioned any specific sampling strategy that was used. Hence, **I would not say that any finding from this dataset can be generalised.**  
+
+To comment on whether the dataset can be used for drawing any causal conclusion, it is important to look at the source of the data. As per the Metadata description, BRFSS2013 data has been collected by means of telephonic survey. As the dataset has not generated out of any experimental setup, I will clasify it as **observational**.  
+
+Moreover, this dataset may have some typical problem while data-gathering. They include but not limited to, intentional falsification of information by the respondent when it comes to disclosure of sensitive data like `Income Level`, and *other personally indentifiable heath information* etc. For some of the observations we could see, the respondent has purposefully refused to give information and in some other cases the respondent has shown indifference. Also, there is no other means to verify the authenticity of the data.
+
+With that, I would like to say, the use of this data should only be limited to studying association between two or more variables. Any causal relationship if needs to be drawn, will require proper statistical experiment to be set up or potential removal of all the related *lurking variables*.
+
+* * *
+
+## Part 2: Research questions
+
+In the rest of the document we will be mainly dealing with the below mentioned three research questions.
+
+**Research quesion 1:**  
+*Whether excessive consumption of alcohol leads to obesity*, has been much debated topic in recent times. We would like to determine the association between the consumption of alcohol and obesity among the adults and how the nature of association is, among different genders.  
+
+**Research quesion 2:**  
+We are interested in finding the proportion of adults diagonsed with *heart attack*, *coronary heart desease* and *stroke* on the basis of which employment group they belong to. Because if we think logically, being employed or unemployed may have a direct influence on making a person more susceptible to these life-threatning disease.  
+
+**Research quesion 3:**  
+We have seen that poor access to basic survival needs like `adequate income`, `affordability of medicare` may lead to emotional and psycological stress. This phenomena we are keen to analyse by studying the association among *Could Not See Dr. Because Of Cost*, *Number Of Days Mental Health Not Good* and *Income Level*.  
+
+* * *
+
+## Part 3: Exploratory data analysis
+
+Now that we have defined our question of interest, let us dig into some exploratory data analysis to figure out any potential association. 
+
+**Research quesion 1:**
+
+In order to answer Question 1, first of all we need to calculate BMI. For that we will use `weight2` and `height3` variables. Aditionally we are going have `sex` and `avedrnk2` into account. 
+
+To have a quick glance at their description
+
+`weight2` - Reported Weight in Pounds  
+`height3` - Reported Height In Feet And Inches  
+`sex` - Respondents Sex  
+`avedrnk2` - Avg Alcoholic Drinks Per Day In Past 30 Days
+
+
+For my convenience I have renamed them while selecting the required variables.  
+
+```{r}
+data <- brfss2013 %>%
+  filter(dispcode=='Completed interview')%>%
+  select(Weight=weight2,Height=height3,Sex=sex,AveDrink=avedrnk2)
+
+head(data,5)
+```
+
+Let us have a look at their data-type
+```{r}
+str(data)
+```
+
+From the Metadata We can observe that every data instance in `weight2` variable is recorded either in kilograms(Metric) or in pounds. 
+
+From here we will first create a function to convert `weight2` values into metric system. Another objective of this function would be to convert `string` values to `number`.
+
+*Note:* Here I have purposefully assigned all other values to `9999`, so that lateron I can filter them out.
+
+```{r}
+calc_weight <- function(weight) {
+  
+  x=sapply(weight,function(x)
+  {
+    num=as.numeric(as.character(x));
+    if(num>=9000 && num<=9998)
+    {
+      num=(num-9000)
+    }
+    else if(num>=50 && num<=0999)
+    {
+      num=num*0.453592
+    }
+    else
+    {
+      num=9999
+    }
+    return(num)
+  },simplify=TRUE)
+
+  return(x)
+}
+```
+
+Now that we have designed the function, we may filter out the desired entries by using this function within `mutate`.
+
+As within the function we are converting the *strings* to *numbers*, we need to filter any non-digit out before applying the function.
+
+```{r}
+data <- data %>%
+  filter(!grepl("\\D", Weight)) %>%
+  filter(!(Weight =='')) %>%
+  mutate(Weight = as.numeric(calc_weight(Weight))) %>%
+  filter(!(Weight == 9999))
+```
+
+Now we need to exclude the possible outliers. For that we will compute `Q1`,`Q3`,`IQR`. Once that is done we can calculate our lower and upper whisker of the box plot as `Q1+1.5*IQR` and `Q1-1.5*IQR` respectively.
+
+```{r}
+quantile(data$Weight)
+Q1 = unname(quantile(data$Weight))[2]
+Q3 = unname(quantile(data$Weight))[4]
+LW = Q1 - 1.5*(Q3-Q1)
+UW = Q3 + 1.5*(Q3-Q1)
+LW
+UW
+data <- data %>% filter(Weight >=LW, Weight <= UW)
+
+head(data,5)
+```
+
+Now it is the time to consider `length` variable.
+
+Here also if we give a quick glance at the metadata, the same requirement arises,  
+1. conversion of the values to metric system  
+2. conversion from *strings* to *numbers*  
+3. filtering out the outliers
+
+This is the conversion function
+
+```{r}
+calc_height <- function(height){
+  
+  x=sapply(height,function(x){
+    
+    num=as.numeric(as.character(x));
+    if(num>=200 && num<=711)
+    {
+      m = (mod(num,100) + (as.integer(num/100)*12))*0.0254
+    }
+    
+    else if(num>=9000 && num<=9888)
+    {
+      num = num - 9000
+      m = (mod(num,100)/100) + as.integer(num/100)
+    }
+    
+    else
+    {
+      m = 9000
+    }
+    return(m)
+  },simplify = TRUE)
+  return(x)
+}
+```
+
+Lets filter out observations which are inconsistent with the data definition or not needed for the analysis.
+
+```{r}
+data <- data %>%
+  filter(!(Height =='')) %>%
+  mutate(Height = as.numeric(calc_height(Height))) %>%
+  filter(!(Height == 9999))
+```
+
+Now this is time for outlier elimination
+ 
+```{r}
+quantile(data$Height)
+Q1 = unname(quantile(data$Height))[2]
+Q3 = unname(quantile(data$Height))[4]
+LW = Q1 - 1.5*(Q3-Q1)
+UW = Q3 + 1.5*(Q3-Q1)
+LW
+UW
+data <- data %>% filter(Height >=LW, Height <= UW)
+
+head(data,5)
+```
+
+Next we will filter out the `NA` components from `AveDrink`, the reson being, as per the metadata it represents the below mentioned three different kinds of values.  
+1. Don't Know/Not Sure  
+2. Refused  
+3. [Missing]  
+
+```{r}
+data <- data %>% filter(!is.na(AveDrink))
+head(data,5)
+```
+
+Elimination of `NA` values from sex.
+```{r}
+#for Sex
+data <- data %>% filter(!is.na(Sex))
+head(data,5)
+```
+
+Finally the calulation of `BMI`
+```{r}
+data <- data %>% mutate(BMI = Weight/(Height*Height))
+head(data,10)
+```
+
+We will classify the weight status based on the `BMI`, as per the below table.  
+
+******
+| BMI | Weight Status |
+|:---:|:-------------:|
+| Below 18.5 | Underweight |
+| 18.5 – 24.9 | Normal or Healthy Weight |
+| 25.0 – 29.9 |	Overweight |
+| 30.0 and Above | Obese |
+******
+Let us create a function for that and apply it to create a new variable called `w_status` in our dataset.
+
+```{r}
+status <- function(bmi){
+  v <- sapply(bmi,function(x){
+    
+    if(x>=30)
+    {
+      s = 'Obese'
+    }
+    else if(x>=25 && x<30)
+    {
+      s = 'Overweight'
+    }
+    else if(x>=18.5 && x<25)
+    {
+      s = 'Normal'
+    }
+    else if(x<18.5)
+    {
+      s = 'Underweight'
+    }
+    return(s)
+  },simplify = TRUE)
+  return(v)
+}
+
+data <- data %>% mutate(w_status=status(BMI))
+```
+we will have a final glance at our data fragment
+
+```{r}
+head(data,10)
+```
+
+We are now well-equipped to begin our analysis.
+
+let us first try to figure out the statistics of alcohol consumption based on weight_status.
+```{r}
+consumption_pattern = data %>% 
+  group_by(Sex,w_status) %>%
+  summarise(mean_drnk=mean(AveDrink))
+consumption_pattern  
+```
+
+This we can visualize by plotting it in a comparision column chart.
+
+```{r}
+plot <- ggplot(data=consumption_pattern, aes(x=w_status,y=mean_drnk,fill=Sex))
+plot <- plot + geom_col(position = position_dodge2(preserve = "single"))  
+plot
+```
+
+This plot turns out to be surprising, as here for `Male` population, those who are `underweight`, tend to consume more alcoholic drink. But we cannot take this into account as a causation because, here observations that are collected from the survey are heavily dependent on the other `confounding variables`. One such variable in this example can be *whether all of the observations considered here is getting adequate portion to maintain their healthy BMI*. If this is not true over here then the fact that *overconsumption of alcohol leads to malnutrition(if at all)* can not be validated from this set of data.
+
+Here to further examine the centre and spread of the distribution of `AveDrink` over `w_status` let us create a box plot.  
+
+```{r}
+plot <- ggplot(data=data, aes(x=w_status, y=AveDrink, fill=Sex))
+plot <- plot + geom_boxplot(position = position_dodge2(preserve = "single"))  
+plot  
+```
+
+From the boxplot we can see that a significant number of observations have been considered as outliers. This is because most of the data points are clustered around `AveDrink = 1` to `AveDrink = 3`. That means for majority of the population, the average alcoholic drink per day from the past month lies between `1` to `3`.  
+
+Now we will determine average BMI of each level of drunker.
+
+```{r}
+result <- data %>% group_by(Sex,AveDrink) %>%
+  summarise(count=n(),ave_BMI = mean(BMI))
+tail(result,6)
+```
+
+Before plotting we would like to segregate `result` into two parts. One exclusively for `Male` and another for `Female`.  
+
+```{r}
+result_male <- result %>% filter(Sex=='Male')
+head(result_male,10)
+result_female <- result %>% filter(Sex=='Female')
+head(result_female,10)
+```
+
+Now we can plot both of them in a single plot area to visualize how the association between `AveDrink` and `ave_BMI` varies on the basis on `Sex`.  
+
+```{r}
+plot <- ggplot(data=result,aes(x=AveDrink,y=ave_BMI)) 
+plot <- plot + geom_point(aes(colour=Sex))
+plot <- plot + labs(x = 'Ave. alcoholic drink per day past month', y = 'Average BMI')
+plot
+```
+
+Here, the graphical plot is not quite clear in terms of figuring out the association, except for the lower part of the dataset. Roughly it looks like `ave_BMI` is kind of *independent* to the consumption of alcohol. But again as these are observational data, the findings can not be taken into account for determining causal relationships.
+
+**Research quesion 2:**  
+
+As always, let us first select the desired variables we want to work with.  
+
+They are namely,  
+`employ1`  : Employment Status  
+`cvdinfr4` : Ever Diagnosed With Heart Attack  
+`cvdcrhd4` : Ever Diagnosed With Angina Or Coronary Heart Disease  
+`cvdstrk3` : Ever Diagnosed With A Stroke  
+
+For our convenience we will copy the above variables in a new tibble and accordingly rename them.
+```{r}
+data <- brfss2013 %>%
+  select(EmpStatus = employ1, HeartAttack = cvdinfr4, CoronaryHD = cvdcrhd4, Stroke = cvdstrk3)
+
+head(data,10)
+```
+We would want to have a glance at their summary  
+
+```{r}
+str(data)
+
+```
+
+Now we need to prepare our data for analysis.  
+
+If we look at `EmpStatus`, `NA` signifies two different kind of observation, namely *Refused*, *[Missing]*
+
+let us filter them out.
+```{r}
+data <- data %>% filter(!is.na(EmpStatus))
+```
+
+similarly after going through the Metadata description of all other variables we can safely remove those observations which are having `NA`.  
+
+```{r}
+data <- data %>% 
+  filter(!is.na(HeartAttack)) %>%
+  filter(!is.na(CoronaryHD)) %>%
+  filter(!is.na(Stroke))
+```
+Now that our data is ready we may start with the analysis.
+
+We need to create a table featuring percentage of people got affected in `HeartAttack`, `CoronaryHD` and `Stroke` from each of the income group.
+```{r}
+result <- data %>% group_by(EmpStatus) %>% 
+  
+  summarise(P_HeartAttack = sum(HeartAttack == 'Yes')/n(), P_CoronaryHD = sum(CoronaryHD == 'Yes')/n(), P_Stroke = sum(Stroke == 'Yes')/n())
+
+result
+
+```
+
+Now let us plot this data in comparision column chart to better visualize it.
+But for that we need to slightly restructure the data so that we can use `fill` in `ggplot2::aes()`
+
+Instead of storing `P_HeartAttack`, `P_CoronaryHD`, `P_Stroke` in three different columns of the *tibble*, we will store all the percentage values in a single column and then create one extra column to hold the name of the `Disease`.
+
+In order to do this we will first create three different *tibble*, each one corresponding to one type of disease.  
+
+```{r}
+
+result_HA <- result %>% 
+  select(EmpStatus,Percentage = P_HeartAttack) %>%
+  mutate(Disease = 'Heart Attack')
+
+result_CHD <- result %>%
+  select(EmpStatus,Percentage = P_CoronaryHD) %>%
+  mutate(Disease = 'Coronary Heart Disease')
+
+result_S <- result %>%
+  select(EmpStatus,Percentage = P_Stroke) %>%
+  mutate(Disease = 'Stroke')
+```
+
+Now let us merge them to have one single table.  
+```{r}
+result_com <- bind_rows(result_HA,result_CHD,result_S)
+result_com
+```
+
+Now we can easily plot this in an column chart.  
+
+```{r}
+x_labels <- c('Emp','SelfEmp','OutOfWork>=1Y','OutOfWork<1Y','Homemaker','Student','Retired','Unable2wrk')
+plot <- ggplot(data=result_com,aes(x=EmpStatus, y=Percentage, fill=Disease))
+plot <- plot + geom_col(width=0.7,position=position_dodge2(preserve = "single"))
+plot <- plot + scale_x_discrete(guide = guide_axis(n.dodge = 2), labels = x_labels)
+plot <- plot + labs( x = "Employment Status", y = "Percentage Affected")
+plot
+```
+
+A few important observations we can readily interpret from this plot.  
+
+1. `Students` as expected, are the least affected.  
+2. `Retired` persons are the second highest in terms of gettings diagnosed with these disease.  
+3. `Unable to work`, this category is contributing the highest to the overall figure of victimised citizen.
+
+Now the third observation can be mostly due to the kind of psycological impact, life is throwing at these people for being unable to work. But again this is just one of the many possible reasons. There can be many other *lurking variables*, those that need to be taken into consideration before being able to draw causal conclusions. One such example is *food habit* of the targeted observation which has a direct correlation with employment status and disease susceptibility.
+
+**Research quesion 3:**  
+
+Like the last time let us put some effort is shaping out data first.  
+
+The variable that we will be using are.  
+`income2`  : Income Level  
+`menthlth` : Number Of Days Mental Health Not Good  
+`medcost`  : Could Not See Dr. Because Of Cost  
+
+We will first rename the variables based on our convenience and export these in a new_tibble using `dplyr::select()`  
+
+Now let us merge them to have one single table.  
+```{r}
+data <- brfss2013 %>% select(IncomeRange = income2, MentUnwellDays = menthlth, UnaffMedCost = medcost)
+```
+
+Here comes the structure of the table.  
+```{r}
+str(data)
+```
+
+We would like to have a glance at the snapshot of the data.  
+```{r}
+head(data,6)
+```
+
+As like before, by looking at the Metadata, we would like to filter out the `NA` values from all the three variables.  
+
+```{r}
+data <- data %>% 
+  filter(!is.na(IncomeRange)) %>%
+  filter(!is.na(MentUnwellDays)) %>%
+  filter(!is.na(UnaffMedCost)) %>%
+  filter(MentUnwellDays>=0,MentUnwellDays<=30)
+
+head(data,10)
+```
+
+To begin with the analysis, first let us calculate, *the percentage of people from each income category who can not visit the doctor because of cost* and *mean number of mentally unwell days for each income group*.  
+
+we will use `group_by()` and `summarise()` to do this.  
+
+```{r}
+result <- data %>% 
+  group_by(IncomeRange) %>%
+  summarise(P_UnaffMedCost = sum(UnaffMedCost == 'Yes')/n(),mean_mwd = mean(MentUnwellDays))
+
+result
+```
+
+By looking at this table we can see a clear correlation between income level and mental health.  
+
+We will plot this to understand more.  
+
+```{r}
+x_labels <- c('< $10000','< $15000','< $20000','< $25000','< $35000','< $50000','< $75000','> $75000')
+plot <- ggplot(data=result,aes(x=IncomeRange,y=mean_mwd))
+plot <- plot + geom_point(colour='red')
+plot <- plot + scale_x_discrete(labels = x_labels)
+plot <- plot + labs( x = "Income Range", y = "Number Of Days Mentally Unwell")
+plot
+
+```
+
+The diagram depicts the fact that, adults whose income level is comparatively low usually suffers more from mental unwellness. But again here it is hard to draw a causal conclusion because when it comes to income, most of the people are more accustomed to falsifying the income levels. So here the data gathered by means of telephonic interview can be questionable.  
+
+To better understand the median and spread of `MentUnwellDays` we will now create a box plot.  
+```{r}
+x_labels <- c('< $10000','< $15000','< $20000','< $25000','< $35000','< $50000','< $75000','> $75000')
+plot <- ggplot(data=data, aes(x=IncomeRange,y=MentUnwellDays,fill=UnaffMedCost))
+plot <- plot + geom_boxplot(position = position_dodge2(preserve = "single"))
+plot <- plot + scale_x_discrete(labels = x_labels)
+plot <- plot + labs( x = "Income Range", y = "Number Of Days Mentally Unwell")
+plot
+
+```
+
+In this diagram the following observations are noteworthy.  
+
+1. For every income range those who can afford to see a doctor, are found to spend comparatively more number of mentally healthy days than their opposite counterpart.  
+2. The group of people who are earning the highest, among them we can see a relatively more number of outliers, who happens to be as unhappy as the lower income groups.  
+
+The second observation here in happens to be more significant as this tells us that, apart from money and access to essential medical care, there are a number of other reasons which may influence the mental health. These variables are potential *confounding variables* in this case. Such examples include but not limited to *chronic depression due to sudden shock*, *intricate and stress-causing family problems* etc. To be able to draw any causal conclusion out of this, we need to nullify the effect of all such confounding variables.  
+
+
+*******
